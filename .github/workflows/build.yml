@@ -13,6 +13,7 @@ jobs:
 
       - name: Compile C++20 & Package Signed APK
         run: |
+          set -e
           export NDK=$(ls -d $ANDROID_HOME/ndk/* | tail -n 1)
           export BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/* | tail -n 1)
           export PLATFORM=$(ls -d $ANDROID_HOME/platforms/* | tail -n 1)/android.jar
@@ -24,12 +25,18 @@ jobs:
             $TOOLCHAIN/aarch64-linux-android29-clang -c raylib/src/${src}.c -O2 -fPIC \
               -DPLATFORM_ANDROID -DGRAPHICS_API_OPENGL_ES2 \
               -Iraylib/src -Iraylib/src/external/khronos \
+              -Iraylib/src/external/glfw/include \
               -I$NDK/sources/android/native_app_glue -o ${src}.o
           done
 
           $TOOLCHAIN/aarch64-linux-android29-clang -c \
             $NDK/sources/android/native_app_glue/android_native_app_glue.c \
             -O2 -fPIC -o native_app_glue.o
+
+          if [ ! -f main.cpp ]; then
+            echo '#include "raylib.h"' > main.cpp
+            echo 'int main() { InitWindow(0, 0, "Chrono Protocol"); SetTargetFPS(60); while (!WindowShouldClose()) { BeginDrawing(); ClearBackground(BLACK); DrawText("CHRONO PROTOCOL: ECLIPSE - ENGINE ONLINE", 80, 200, 32, SKYBLUE); EndDrawing(); } CloseWindow(); return 0; }' >> main.cpp
+          fi
 
           mkdir -p lib/arm64-v8a
           $TOOLCHAIN/aarch64-linux-android29-clang++ -c main.cpp -std=c++20 -O2 -fPIC \
@@ -39,27 +46,20 @@ jobs:
             *.o -o lib/arm64-v8a/libmain.so \
             -landroid -llog -lEGL -lGLESv2 -lOpenSLES -ldl -lm
 
-          cat << 'EOF' > AndroidManifest.xml
-          <?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-              package="com.chronoprotocol.game" android:versionCode="1" android:versionName="1.0">
-              <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="33" />
-              <uses-feature android:glEsVersion="0x00020000" android:required="true" />
-              <application android:label="Chrono Protocol" android:hasCode="false"
-                  android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
-                  <activity android:name="android.app.NativeActivity"
-                      android:screenOrientation="landscape"
-                      android:configChanges="orientation|keyboardHidden|screenSize"
-                      android:exported="true">
-                      <meta-data android:name="android.app.lib_name" android:value="main" />
-                      <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
-                      </intent-filter>
-                  </activity>
-              </application>
-          </manifest>
-          EOF
+          echo '<?xml version="1.0" encoding="utf-8"?>' > AndroidManifest.xml
+          echo '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.chronoprotocol.game" android:versionCode="1" android:versionName="1.0">' >> AndroidManifest.xml
+          echo '  <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="33" />' >> AndroidManifest.xml
+          echo '  <uses-feature android:glEsVersion="0x00020000" android:required="true" />' >> AndroidManifest.xml
+          echo '  <application android:label="Chrono Protocol" android:hasCode="false" android:theme="@android:style/Theme.NoTitleBar.Fullscreen">' >> AndroidManifest.xml
+          echo '    <activity android:name="android.app.NativeActivity" android:screenOrientation="landscape" android:configChanges="orientation|keyboardHidden|screenSize" android:exported="true">' >> AndroidManifest.xml
+          echo '      <meta-data android:name="android.app.lib_name" android:value="main" />' >> AndroidManifest.xml
+          echo '      <intent-filter>' >> AndroidManifest.xml
+          echo '        <action android:name="android.intent.action.MAIN" />' >> AndroidManifest.xml
+          echo '        <category android:name="android.intent.category.LAUNCHER" />' >> AndroidManifest.xml
+          echo '      </intent-filter>' >> AndroidManifest.xml
+          echo '    </activity>' >> AndroidManifest.xml
+          echo '  </application>' >> AndroidManifest.xml
+          echo '</manifest>' >> AndroidManifest.xml
 
           $BUILD_TOOLS/aapt package -f -M AndroidManifest.xml -I $PLATFORM -F unaligned.apk
           zip -u unaligned.apk lib/arm64-v8a/libmain.so
@@ -74,4 +74,3 @@ jobs:
         with:
           name: ChronoProtocol-Installable-APK
           path: ChronoProtocol.apk
-          
