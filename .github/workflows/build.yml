@@ -11,48 +11,34 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android NDK & Build Tools
-        run: sdkmanager "ndk;26.1.10909125" "platforms;android-33" "build-tools;33.0.2" "cmake;3.22.1"
-
-      - name: Build Raylib & Package Signed APK
+      - name: Compile C++20 & Package Signed APK
         run: |
-          export NDK=$ANDROID_HOME/ndk/26.1.10909125
-          export BUILD_TOOLS=$ANDROID_HOME/build-tools/33.0.2
-          export PLATFORM=$ANDROID_HOME/platforms/android-33/android.jar
+          export NDK=$(ls -d $ANDROID_HOME/ndk/* | tail -n 1)
+          export BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/* | tail -n 1)
+          export PLATFORM=$(ls -d $ANDROID_HOME/platforms/* | tail -n 1)/android.jar
+          export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
 
-          # 1. Generate CMakeLists.txt automatically
-          cat << 'EOF' > CMakeLists.txt
-          cmake_minimum_required(VERSION 3.22)
-          project(ChronoProtocol LANGUAGES C CXX)
-          set(CMAKE_CXX_STANDARD 20)
-          set(PLATFORM "Android" CACHE STRING "" FORCE)
-          set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-          include(FetchContent)
-          FetchContent_Declare(raylib GIT_REPOSITORY https://github.com/raysan5/raylib.git GIT_TAG 5.5 GIT_SHALLOW TRUE)
-          FetchContent_MakeAvailable(raylib)
-          add_library(main SHARED main.cpp ${ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c)
-          target_include_directories(main PRIVATE ${ANDROID_NDK}/sources/android/native_app_glue)
-          target_link_libraries(main raylib android log EGL GLESv2 OpenSLES m)
-          set_target_properties(main PROPERTIES LINK_FLAGS "-u ANativeActivity_onCreate")
-          EOF
+          git clone --depth 1 --branch 5.5 https://github.com/raysan5/raylib.git
 
-          # 2. Compile C++20 code into ARM64 native library
-          cmake -B build -DCMAKE_SYSTEM_NAME=Android -DCMAKE_SYSTEM_VERSION=29 \
-            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a -DCMAKE_ANDROID_NDK=$NDK -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --config Release
+          for src in rcore rshapes rtextures rtext rmodels utils raudio; do
+            $TOOLCHAIN/aarch64-linux-android29-clang -c raylib/src/${src}.c -O2 -fPIC \
+              -DPLATFORM_ANDROID -DGRAPHICS_API_OPENGL_ES2 \
+              -Iraylib/src -Iraylib/src/external/khronos \
+              -I$NDK/sources/android/native_app_glue -o ${src}.o
+          done
 
-          # 3. Create AndroidManifest.xml
-          mkdir -p apk/lib/arm64-v8a
-          cp build/libmain.so apk/lib/arm64-v8a/libmain.so
+          $TOOLCHAIN/aarch64-linux-android29-clang -c \
+            $NDK/sources/android/native_app_glue/android_native_app_glue.c \
+            -O2 -fPIC -o native_app_glue.o
+
+          mkdir -p lib/arm64-v8a
+          $TOOLCHAIN/aarch64-linux-android29-clang++ -c main.cpp -std=c++20 -O2 -fPIC \
+            -DPLATFORM_ANDROID -DGRAPHICS_API_OPENGL_ES2 -Iraylib/src -o main.o
+
+          $TOOLCHAIN/aarch64-linux-android29-clang++ -shared -u ANativeActivity_onCreate \
+            *.o -o lib/arm64-v8a/libmain.so \
+            -landroid -llog -lEGL -lGLESv2 -lOpenSLES -ldl -lm
+
           cat << 'EOF' > AndroidManifest.xml
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -75,9 +61,9 @@ jobs:
           </manifest>
           EOF
 
-          # 4. Package, Align, and Sign the APK
-          $BUILD_TOOLS/aapt package -f -M AndroidManifest.xml -I $PLATFORM -F unaligned.apk apk
-          $BUILD_TOOLS/zipalign -f 4 unaligned.apk aligned.apk
+          $BUILD_TOOLS/aapt package -f -M AndroidManifest.xml -I $PLATFORM -F unaligned.apk
+          zip -u unaligned.apk lib/arm64-v8a/libmain.so
+          $BUILD_TOOLS/zipalign -f -p 4 unaligned.apk aligned.apk
           keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey \
             -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           $BUILD_TOOLS/apksigner sign --ks debug.keystore --ks-pass pass:android --key-pass pass:android \
