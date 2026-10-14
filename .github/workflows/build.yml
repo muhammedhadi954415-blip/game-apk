@@ -1,76 +1,79 @@
-name: Build Installable Android APK
+name: Build Chrono Protocol Android APK
+
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build-apk:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - name: Checkout Code
+      - name: Checkout project
         uses: actions/checkout@v4
 
-      - name: Compile C++20 & Package Signed APK
+      - name: Build ARM64 native game and package signed APK
+        shell: bash
         run: |
-          set -e
-          export NDK=$(ls -d $ANDROID_HOME/ndk/* | tail -n 1)
-          export BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/* | tail -n 1)
-          export PLATFORM=$(ls -d $ANDROID_HOME/platforms/* | tail -n 1)/android.jar
-          export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
+          set -euxo pipefail
+          export NDK="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          export BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          export PLATFORM="$(find "$ANDROID_HOME/platforms" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)/android.jar"
+          export TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export SYSROOT="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          export CC="$TOOLCHAIN/aarch64-linux-android29-clang"
+          export CXX="$TOOLCHAIN/aarch64-linux-android29-clang++"
 
-          git clone --depth 1 --branch 5.5 https://github.com/raysan5/raylib.git
+          git clone --depth 1 --branch 5.5 https://github.com/raysan5/raylib.git raylib
+          mkdir -p obj lib/arm64-v8a
 
+          # Build raylib's Android/OpenGL ES 2 implementation.
           for src in rcore rshapes rtextures rtext rmodels utils raudio; do
-            $TOOLCHAIN/aarch64-linux-android29-clang -c raylib/src/${src}.c -O2 -fPIC \
-              -DPLATFORM_ANDROID -DGRAPHICS_API_OPENGL_ES2 \
+            "$CC" -c "raylib/src/${src}.c" -O2 -fPIC \
+              -DPLATFORM_ANDROID -DGRAPHICS_API_OPENGL_ES2 -D__ANDROID_API__=29 \
               -Iraylib/src -Iraylib/src/external/khronos \
               -Iraylib/src/external/glfw/include \
-              -I$NDK/sources/android/native_app_glue -o ${src}.o
+              -I"$NDK/sources/android/native_app_glue" \
+              -o "obj/${src}.o"
           done
 
-          $TOOLCHAIN/aarch64-linux-android29-clang -c \
-            $NDK/sources/android/native_app_glue/android_native_app_glue.c \
-            -O2 -fPIC -o native_app_glue.o
+          "$CC" -c "$NDK/sources/android/native_app_glue/android_native_app_glue.c" \
+            -O2 -fPIC -D__ANDROID_API__=29 -I"$NDK/sources/android/native_app_glue" \
+            -o obj/native_app_glue.o
 
-          if [ ! -f main.cpp ]; then
-            echo '#include "raylib.h"' > main.cpp
-            echo 'int main() { InitWindow(0, 0, "Chrono Protocol"); SetTargetFPS(60); while (!WindowShouldClose()) { BeginDrawing(); ClearBackground(BLACK); DrawText("CHRONO PROTOCOL: ECLIPSE - ENGINE ONLINE", 80, 200, 32, SKYBLUE); EndDrawing(); } CloseWindow(); return 0; }' >> main.cpp
-          fi
+          "$CXX" -c main.cpp -std=c++20 -O2 -fPIC -fexceptions -frtti \
+            -DPLATFORM_ANDROID -DGRAPHICS_API_OPENGL_ES2 -D__ANDROID_API__=29 \
+            -Iraylib/src -I"$NDK/sources/android/native_app_glue" -o obj/main.o
 
-          mkdir -p lib/arm64-v8a
-          $TOOLCHAIN/aarch64-linux-android29-clang++ -c main.cpp -std=c++20 -O2 -fPIC \
-            -DPLATFORM_ANDROID -DGRAPHICS_API_OPENGL_ES2 -Iraylib/src -o main.o
-
-          $TOOLCHAIN/aarch64-linux-android29-clang++ -shared -u ANativeActivity_onCreate \
-            *.o -o lib/arm64-v8a/libmain.so \
+          "$CXX" -shared -Wl,-soname,libmain.so -Wl,-u,ANativeActivity_onCreate \
+            -Wl,--no-undefined obj/*.o -o lib/arm64-v8a/libmain.so \
             -landroid -llog -lEGL -lGLESv2 -lOpenSLES -ldl -lm
 
-          echo '<?xml version="1.0" encoding="utf-8"?>' > AndroidManifest.xml
-          echo '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.chronoprotocol.game" android:versionCode="1" android:versionName="1.0">' >> AndroidManifest.xml
-          echo '  <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="33" />' >> AndroidManifest.xml
-          echo '  <uses-feature android:glEsVersion="0x00020000" android:required="true" />' >> AndroidManifest.xml
-          echo '  <application android:label="Chrono Protocol" android:hasCode="false" android:theme="@android:style/Theme.NoTitleBar.Fullscreen">' >> AndroidManifest.xml
-          echo '    <activity android:name="android.app.NativeActivity" android:screenOrientation="landscape" android:configChanges="orientation|keyboardHidden|screenSize" android:exported="true">' >> AndroidManifest.xml
-          echo '      <meta-data android:name="android.app.lib_name" android:value="main" />' >> AndroidManifest.xml
-          echo '      <intent-filter>' >> AndroidManifest.xml
-          echo '        <action android:name="android.intent.action.MAIN" />' >> AndroidManifest.xml
-          echo '        <category android:name="android.intent.category.LAUNCHER" />' >> AndroidManifest.xml
-          echo '      </intent-filter>' >> AndroidManifest.xml
-          echo '    </activity>' >> AndroidManifest.xml
-          echo '  </application>' >> AndroidManifest.xml
-          echo '</manifest>' >> AndroidManifest.xml
+          # Native C++ games that use the NDK's shared libc++ must package it in the APK.
+          cp "$SYSROOT/usr/lib/aarch64-linux-android/libc++_shared.so" lib/arm64-v8a/libc++_shared.so
 
-          $BUILD_TOOLS/aapt package -f -M AndroidManifest.xml -I $PLATFORM -F unaligned.apk
-          zip -u unaligned.apk lib/arm64-v8a/libmain.so
-          $BUILD_TOOLS/zipalign -f -p 4 unaligned.apk aligned.apk
-          keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey \
-            -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-          $BUILD_TOOLS/apksigner sign --ks debug.keystore --ks-pass pass:android --key-pass pass:android \
+          "$BUILD_TOOLS/aapt" package -f -M AndroidManifest.xml -I "$PLATFORM" \
+            -A assets -F unaligned.apk
+          zip -u unaligned.apk lib/arm64-v8a/libmain.so lib/arm64-v8a/libc++_shared.so
+          "$BUILD_TOOLS/zipalign" -f -p 4 unaligned.apk aligned.apk
+
+          keytool -genkeypair -v -keystore test-release.keystore -storepass android \
+            -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
+            -validity 10000 -dname "CN=Chrono Protocol,O=Android,C=US"
+          "$BUILD_TOOLS/apksigner" sign --ks test-release.keystore \
+            --ks-pass pass:android --key-pass pass:android \
             --out ChronoProtocol.apk aligned.apk
+          "$BUILD_TOOLS/apksigner" verify --verbose ChronoProtocol.apk
+          "$BUILD_TOOLS/aapt" list ChronoProtocol.apk | grep -E 'lib/arm64-v8a/lib(main|c\+\+_shared)\.so|assets/audio/act1\.ogg|assets/textures/floor\.jpg'
 
-      - name: Upload Ready-to-Install APK
+      - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: ChronoProtocol-Installable-APK
+          name: ChronoProtocol-Android-APK
           path: ChronoProtocol.apk
+          if-no-files-found: error
+          retention-days: 14
